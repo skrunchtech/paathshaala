@@ -1,0 +1,110 @@
+# ----------------------------------------------------------------------------
+# CircleCI config for paathshaala
+#
+# This config builds and deploys your Docker image to the Skrunch k8s cluster.
+# It does NOT include lint or test jobs — add those yourself, or ask an AI
+# model to generate them based on your project's language and test framework.
+#
+# To add CI jobs: insert a job definition above build-and-push-image and add
+# it to the pr-check workflow (runs on PRs) or build-and-deploy (runs on main).
+# ----------------------------------------------------------------------------
+version: 2.1
+
+orbs:
+  gcp-gcr: circleci/gcp-gcr@0.16.11
+
+jobs:
+  build-and-push-image:
+    machine:
+      image: ubuntu-2204:edge
+
+    steps:
+      - checkout
+      - gcp-gcr/gcr-auth
+      - gcp-gcr/build-image:
+          dockerfile: Dockerfile
+          image: paathshaala
+          no_output_timeout: 20m
+      - gcp-gcr/push-image:
+          digest-path: /tmp/digest.txt
+          image: paathshaala
+      - gcp-gcr/tag-image:
+          image: paathshaala
+          source-tag: latest
+          target-tag: $CIRCLE_SHA1
+      - run:
+          name: Display image digest
+          command: echo "Digest is $(</tmp/digest.txt)"
+      - run:
+          name: Deploy via ArgoCD
+          command: |
+            # Set the image tag to this build's SHA and trigger a sync
+            PATCH_RESP=$(curl -s -w "\n%{http_code}" -X PATCH \
+              "https://argocd.skrunch.io/api/v1/applications/${ARGOCD_APP_NAME}" \
+              -H "Authorization: Bearer ${ARGOCD_AUTH_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d '{"patch":"{\"spec\":{\"source\":{\"helm\":{\"parameters\":[{\"name\":\"image.tag\",\"value\":\"'"$CIRCLE_SHA1"'\"}]}}}}","patchType":"merge"}')
+            PATCH_CODE=$(echo "$PATCH_RESP" | tail -1)
+            if [ "$PATCH_CODE" -lt 200 ] || [ "$PATCH_CODE" -ge 300 ]; then
+              echo "ERROR: ArgoCD PATCH failed (HTTP $PATCH_CODE):"
+              echo "$PATCH_RESP" | sed '$d'
+              exit 1
+            fi
+            echo "✓ image.tag set to $CIRCLE_SHA1"
+
+            SYNC_RESP=$(curl -s -w "\n%{http_code}" -X POST \
+              "https://argocd.skrunch.io/api/v1/applications/${ARGOCD_APP_NAME}/sync" \
+              -H "Authorization: Bearer ${ARGOCD_AUTH_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d '{}')
+            SYNC_CODE=$(echo "$SYNC_RESP" | tail -1)
+            if [ "$SYNC_CODE" -lt 200 ] || [ "$SYNC_CODE" -ge 300 ]; then
+              echo "ERROR: ArgoCD sync failed (HTTP $SYNC_CODE):"
+              echo "$SYNC_RESP" | sed '$d'
+              exit 1
+            fi
+            echo "✓ Sync triggered for ${ARGOCD_APP_NAME}"
+      - run:
+          name: Notify Discord (success)
+          command: |
+            curl -s -X POST "$DISCORD_WEBHOOK_URL" \
+              -H "Content-Type: application/json" \
+              -d '{
+                "embeds": [{
+                  "title": "✅ '"${CIRCLE_PROJECT_REPONAME}"' build deployed",
+                  "url": "'"${CIRCLE_BUILD_URL}"'",
+                  "color": 1621586,
+                  "fields": [
+                    {"name": "Branch", "value": "'"${CIRCLE_BRANCH}"'", "inline": true},
+                    {"name": "Commit", "value": "'"${CIRCLE_SHA1:0:8}"'", "inline": true},
+                    {"name": "Author", "value": "'"${CIRCLE_USERNAME}"'", "inline": true}
+                  ]
+                }]
+              }'
+          when: on_success
+      - run:
+          name: Notify Discord (failure)
+          command: |
+            curl -s -X POST "$DISCORD_WEBHOOK_URL" \
+              -H "Content-Type: application/json" \
+              -d '{
+                "embeds": [{
+                  "title": "❌ '"${CIRCLE_PROJECT_REPONAME}"' build failed",
+                  "url": "'"${CIRCLE_BUILD_URL}"'",
+                  "color": 15298678,
+                  "fields": [
+                    {"name": "Branch", "value": "'"${CIRCLE_BRANCH}"'", "inline": true},
+                    {"name": "Commit", "value": "'"${CIRCLE_SHA1:0:8}"'", "inline": true},
+                    {"name": "Author", "value": "'"${CIRCLE_USERNAME}"'", "inline": true}
+                  ]
+                }]
+              }'
+          when: on_fail
+
+workflows:
+  build-and-deploy:
+    when:
+      equal: [main, << pipeline.git.branch >>]
+    jobs:
+      - build-and-push-image:
+          context: skrunch-common

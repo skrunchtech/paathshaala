@@ -1,0 +1,83 @@
+image:
+  repository: gcr.io/skrunch-195304/paathshaala
+  tag: latest
+  pullPolicy: IfNotPresent
+
+imagePullSecrets:
+  - name: skrunch-gcr-registry
+
+replicaCount: 1
+
+service:
+  type: ClusterIP
+  port: 3000
+
+ingress:
+  enabled: true
+  hostname: paathshaala.skrunch.io
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-production
+    external-dns.alpha.kubernetes.io/hostname: paathshaala.skrunch.io
+    external-dns.alpha.kubernetes.io/cloudflare-proxied: "false"
+
+probes:
+  startup:
+    path: /api/health
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    failureThreshold: 30
+  liveness:
+    path: /api/health
+    periodSeconds: 30
+  readiness:
+    path: /api/health
+    periodSeconds: 10
+
+vault:
+  secretPath: apps/paathshaala/app
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+# --- Overlays ---
+
+authProxy:
+  enabled: false
+  image: quay.io/oauth2-proxy/oauth2-proxy:latest
+  port: 4180
+  provider: google
+  emailDomains:
+    - bollyvista.com
+    - skrunch.io
+  cookieName: _oauth2_proxy
+  skipProviderButton: true
+  externalSecretKey: apps/paathshaala/oauth
+
+postgres:
+  enabled: false
+  vaultSecretKey: apps/paathshaala/database
+
+litellm:
+  enabled: false
+  serviceUrl: "http://litellm-internal.litellm.svc.cluster.local:4000"
+  vaultSecretKey: apps/paathshaala/litellm
+
+redis:
+  enabled: false
+  vaultSecretKey: apps/paathshaala/redis
+
+migrations:
+  enabled: false
+  # command to run — override per app (e.g. alembic, django, prisma)
+  command:
+    - "alembic"
+    - "upgrade"
+    - "head"
+
+newrelicApm:
+  enabled: false
+
+extraSecrets: []

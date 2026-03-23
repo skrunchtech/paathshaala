@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- if .Values.newrelicApm.enabled }}
+    newrelic-apm: enabled
+{{- end }}

@@ -1,0 +1,103 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "paathshaala.fullname" . }}
+  labels:
+    {{- include "paathshaala.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "paathshaala.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "paathshaala.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: paathshaala
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          envFrom:
+            - secretRef:
+                name: paathshaala-secrets
+            {{- if .Values.postgres.enabled }}
+            - secretRef:
+                name: paathshaala-database-secrets
+            {{- end }}
+            {{- if .Values.litellm.enabled }}
+            - secretRef:
+                name: paathshaala-litellm-secrets
+            {{- end }}
+            {{- if .Values.redis.enabled }}
+            - secretRef:
+                name: paathshaala-redis-secrets
+            {{- end }}
+            {{- range .Values.extraSecrets }}
+            - secretRef:
+                name: {{ .name }}
+            {{- end }}
+          {{- if .Values.litellm.enabled }}
+          env:
+            - name: LITELLM_API_URL
+              value: {{ .Values.litellm.serviceUrl | quote }}
+          {{- end }}
+          startupProbe:
+            httpGet:
+              path: {{ .Values.probes.startup.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.probes.startup.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness.path }}
+              port: http
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readiness.path }}
+              port: http
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+        {{- if .Values.authProxy.enabled }}
+        - name: oauth2-proxy
+          image: {{ .Values.authProxy.image }}
+          ports:
+            - name: proxy
+              containerPort: {{ .Values.authProxy.port }}
+              protocol: TCP
+          args:
+            - --provider={{ .Values.authProxy.provider }}
+            - --upstream=http://localhost:{{ .Values.service.port }}
+            - --http-address=0.0.0.0:{{ .Values.authProxy.port }}
+            - --cookie-name={{ .Values.authProxy.cookieName }}
+            - --cookie-secure=true
+            - --cookie-domain={{ (index .Values.ingress.hosts 0).host }}
+            - --reverse-proxy=true
+            - --skip-provider-button={{ .Values.authProxy.skipProviderButton | default true }}
+            - --redirect-url=https://{{ (index .Values.ingress.hosts 0).host }}/oauth2/callback
+            {{- range .Values.authProxy.emailDomains }}
+            - --email-domain={{ . }}
+            {{- end }}
+          envFrom:
+            - secretRef:
+                name: paathshaala-oauth-secrets
+        {{- end }}
+
